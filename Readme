@@ -1,0 +1,137 @@
+# PMPSeg
+
+PMPSeg is a processed B-Rep CAD dataset for three face-level manufacturing prediction tasks:
+
+1. initial-setup (clamping-face) prediction;
+2. machining-strategy prediction; and
+3. tool-direction prediction.
+
+Each CAD face has one label for each task. The processed `.npz` files contain geometric/topological features together with the three aligned label arrays.
+
+## Critical requirement: OCCT face order
+
+> **The face order in PMPSeg is extracted by Open CASCADE Technology (OCCT). Any code that reads or reconstructs the CAD faces MUST preserve exactly the same OCCT face traversal order. The three label sequences MUST also follow that same face order.**
+
+
+For a model with `Nf` faces, if OCCT returns the faces as
+
+```text
+face[0], face[1], ..., face[Nf - 1]
+```
+
+then element `i` of every label sequence must describe `face[i]`:
+
+```text
+initial_setup_label[i]  <-> face[i]
+machining_strategy[i]   <-> face[i]
+tool_direction[i]       <-> face[i]
+```
+
+Do not sort faces by area, surface type, coordinates, an application-specific ID, or any other property. OCCT face indices are traversal positions, not persistent CAD identifiers. Rewriting, healing, or converting a model can change its topology or traversal order. If another CAD kernel is used, an explicit and verified mapping back to the original OCCT order is required before using the labels.
+
+A typical OCCT/PythonOCC traversal is:
+
+```python
+from OCC.Core.TopAbs import TopAbs_FACE
+from OCC.Core.TopExp import TopExp_Explorer
+
+faces = []
+explorer = TopExp_Explorer(shape, TopAbs_FACE)
+while explorer.More():
+    faces.append(explorer.Current())
+    explorer.Next()
+```
+
+Use the faces in the order returned above. Do not reorder `faces` afterward.
+
+## Directory structure
+
+```text
+PMPSeg/
+├── initialsetup faceLabel/     # initial-setup/clamping labels (.txt)
+├── MachiningStrategyLabel/     # machining-strategy labels (.seg)
+├── toolDirectionLabel/         # tool-direction labels (.txt)
+├── processed/                  # processed graph/features and labels (.npz)
+│   └── dataset.json            # training/validation/test split lists
+└── README.md
+```
+
+Files belonging to the same CAD model share the same numeric stem. For example:
+
+```text
+initialsetup faceLabel/00001.txt
+MachiningStrategyLabel/00001.seg
+toolDirectionLabel/00001.txt
+processed/00001.npz
+```
+
+Each raw label file contains one value per face. Line `i` in all three files must correspond to the same OCCT-extracted face `i` (where the first line represents index `0`).
+
+## Processed NPZ format
+
+Let `Nf`, `Ne`, and `Nc` denote the numbers of faces, edges, and coedges, respectively. A processed file contains the following arrays:
+
+| Key | Typical shape | Description |
+| --- | --- | --- |
+| `face_features` | `(Nf, 12)` | Per-face geometric features |
+| `face_point_grids` | `(Nf, 7, 10, 10)` | Per-face sampled point grids |
+| `edge_features` | `(Ne, 10)` | Per-edge geometric features |
+| `coedge_point_grids` | `(Nc, 12, 10)` | Per-coedge sampled point grids |
+| `coedge_features` | `(Nc, 1)` | Per-coedge features |
+| `coedge_lcs` | `(Nc, 4, 4)` | Coedge local coordinate systems |
+| `coedge_scale_factors` | `(Nc,)` | Coedge scale factors |
+| `coedge_reverse_flags` | `(Nc,)` | Coedge orientation flags |
+| `next` | `(Nc,)` | Next-coedge indices |
+| `mate` | `(Nc,)` | Mate-coedge indices |
+| `face` | `(Nc,)` | Coedge-to-face indices |
+| `edge` | `(Nc,)` | Coedge-to-edge indices |
+| `strategy_labels` | `(Nf,)` | Machining-strategy label for every face |
+| `direction_labels` | `(Nf,)` | Tool-direction label for every face |
+| `clamping_labels` | `(Nf,)` | Initial-setup/clamping label for every face |
+
+The first dimension of all face-level arrays is ordered according to the OCCT face traversal. The exact numeric meaning of each class should be documented together with the dataset's class-definition table.
+
+## Loading and validating a sample
+
+```python
+from pathlib import Path
+import numpy as np
+
+sample_path = Path("processed/00001.npz")
+
+with np.load(sample_path, allow_pickle=False) as sample:
+    num_faces = sample["face_features"].shape[0]
+
+    assert sample["face_point_grids"].shape[0] == num_faces
+    assert sample["strategy_labels"].shape == (num_faces,)
+    assert sample["direction_labels"].shape == (num_faces,)
+    assert sample["clamping_labels"].shape == (num_faces,)
+
+    # Every coedge-to-face index must refer to an existing face.
+    if sample["face"].size:
+        assert sample["face"].min() >= 0
+        assert sample["face"].max() < num_faces
+
+print(f"Validated {sample_path}: {num_faces} OCCT-ordered faces")
+```
+
+Before training or evaluation, perform these checks for every sample. Equal lengths are necessary but not sufficient: the semantic alignment must still be preserved by using the original OCCT traversal order.
+
+## Dataset splits
+
+`processed/dataset.json` contains the model stems for the `training_set`, `validation_set`, and `test_set`. Use these supplied splits when reporting comparable results, and avoid placing augmented or duplicated versions of the same source model into different splits.
+
+## Release checklist
+
+Before publishing the repository:
+
+- add the class-name and class-index definitions for all three tasks;
+- add a `LICENSE` file that explicitly covers dataset redistribution and use;
+- add citation information (paper title, authors, venue, year, and BibTeX);
+- remove temporary, duplicate, or non-canonical files; and
+- run the face/label alignment validation on every released sample.
+
+## Acknowledgement
+
+The face ordering and B-Rep topology used by PMPSeg are based on [Open CASCADE Technology (OCCT)](https://dev.opencascade.org/).
+
